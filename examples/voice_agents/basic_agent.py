@@ -18,6 +18,8 @@ from livekit.agents.llm import function_tool
 from livekit.plugins import silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+# ASSIGNMENT: IGNORE LIST 
+IGNORE_WORDS = {"yeah", "ok", "okay", "hmm", "uh-huh", "right", "yea", "aha"}
 # uncomment to enable Krisp background voice/noise cancellation
 # from livekit.plugins import noise_cancellation
 
@@ -34,12 +36,42 @@ class MyAgent(Agent):
             "do not use emojis, asterisks, markdown, or other special characters in your responses."
             "You are curious and friendly, and have a sense of humor."
             "you will speak english to the user",
+            # [CHANGE 1] Disable automatic VAD interruption here
+            allow_interruptions=False
         )
 
     async def on_enter(self):
         # when the agent is added to the session, it'll generate a reply
         # according to its instructions
         self.session.generate_reply()
+
+    # [CHANGE 2] Custom Transcription Node (The Logic Layer)
+    async def transcription_node(self, text, model_settings):
+        async for chunk in text:
+            # A. Clean the text
+            content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+            clean_text = content.lower().strip().replace(".", "").replace(",", "")
+            
+            # B. Check if Agent is Speaking
+            # We access the session's current speech handle to see if audio is playing
+            is_speaking = False
+            if self.session.current_agent and self.session.current_agent.speech_handle:
+                is_speaking = not self.session.current_agent.speech_handle.done()
+
+            # C. Logic Matrix
+            if is_speaking:
+                if clean_text in IGNORE_WORDS:
+                    # Case: Agent speaking + "Yeah" -> IGNORE
+                    print(f"[FILTER] Ignored filler word: '{clean_text}'")
+                    continue # Do not yield chunk (LLM sees nothing)
+                else:
+                    # Case: Agent speaking + "Stop" -> INTERRUPT
+                    print(f"[INTERRUPT] Valid interruption: '{clean_text}'")
+                    await self.session.interrupt() # Manually stop audio
+                    yield chunk # Let LLM know we stopped
+            else:
+                # Case: Agent Silent -> PASS THROUGH
+                yield chunk
 
     # all functions annotated with @function_tool will be passed to the LLM when this
     # agent is active
